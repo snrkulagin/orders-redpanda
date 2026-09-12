@@ -1,0 +1,54 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    container_name: redpanda
+    command:
+      - redpanda
+      - start
+      - --kafka-addr
+      - internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr
+      - internal://redpanda:9092,external://localhost:19092
+      - --smp
+      - "1"
+      - --default-log-level=info
+    ports:
+      - "19092:19092"
+      - "9644:9644"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:latest
+    depends_on:
+      - redpanda
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until rpk cluster info --brokers redpanda:9092; do
+          echo "Waiting for Redpanda..."
+          sleep 2
+        done
+
+        rpk topic create orders.created \
+          --brokers redpanda:9092 \
+          --partitions 3 \
+          --if-not-exists
+  postgres:
+    image: postgres:17
+    container_name: postgres_orders
+
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  redpanda_data:
+  postgres_data:

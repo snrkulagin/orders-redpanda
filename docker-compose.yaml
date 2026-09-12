@@ -32,6 +32,11 @@ services:
 
         rpk topic create orders.created \
           --brokers redpanda:9092 \
+          --partitions 6 \
+          --if-not-exists
+
+        rpk topic create orders.payment_processed \
+          --brokers redpanda:9092 \
           --partitions 3 \
           --if-not-exists
   postgres:

@@ -9,6 +9,7 @@ import (
 
 	"github.com/snrkulagin/orders-redpanda/internal/config"
 	"github.com/snrkulagin/orders-redpanda/internal/service/kafka"
+	"github.com/snrkulagin/orders-redpanda/internal/worker/orderslogger"
 )
 
 func main() {
@@ -19,8 +20,7 @@ func main() {
 	brokers := strings.Split(config.String("KAFKA_BROKERS", "localhost:19092"), ",")
 	group := config.String("KAFKA_CONSUMER_GROUP", "orders-created-logger")
 
-	startOffsetRaw := config.String("KAFKA_START_OFFSET", "earliest")
-	startOffset, err := kafka.ParseStartOffset(startOffsetRaw)
+	startOffset, err := kafka.ParseStartOffset(config.String("KAFKA_START_OFFSET", "earliest"))
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
@@ -34,13 +34,11 @@ func main() {
 	}
 	defer consumer.Close()
 
-	log.Printf("orders-created-consumer started, group=%s topic=%s start=%s", group, kafka.TopicOrdersCreated, startOffsetRaw)
+	app := orderslogger.New(consumer)
 
-	err = consumer.Consume(ctx, func(_ context.Context, msg kafka.Message) {
-		log.Printf("%s: partition=%d offset=%d key=%s value=%s",
-			msg.Topic, msg.Partition, msg.Offset, string(msg.Key), string(msg.Value))
-	})
-	if err != nil {
-		log.Fatalf("consume: %v", err)
+	log.Printf("orders-created-consumer started, group=%s topic=%s start=%s", group, kafka.TopicOrdersCreated, startOffset)
+
+	if err := app.Run(ctx); err != nil {
+		log.Fatalf("orders-created-consumer: %v", err)
 	}
 }

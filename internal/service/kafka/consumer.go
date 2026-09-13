@@ -46,6 +46,13 @@ func ParseStartOffset(s string) (StartOffset, error) {
 	}
 }
 
+func (s StartOffset) String() string {
+	if s == StartOffsetLatest {
+		return "latest"
+	}
+	return "earliest"
+}
+
 func (s StartOffset) kgoOffset() kgo.Offset {
 	if s == StartOffsetLatest {
 		return kgo.NewOffset().AtEnd()

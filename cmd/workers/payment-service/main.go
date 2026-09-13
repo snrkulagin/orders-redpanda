@@ -2,21 +2,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"os/signal"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/snrkulagin/orders-redpanda/internal/config"
-	orderdomain "github.com/snrkulagin/orders-redpanda/internal/domain/order"
+	"github.com/snrkulagin/orders-redpanda/internal/repo"
 	"github.com/snrkulagin/orders-redpanda/internal/service/kafka"
 	"github.com/snrkulagin/orders-redpanda/internal/service/payment"
+	paymentworker "github.com/snrkulagin/orders-redpanda/internal/worker/payment"
 )
-
-// simulatedProcessingDelay slows down each record on purpose.
-const simulatedProcessingDelay = 500 * time.Millisecond
 
 func main() {
 	if err := config.LoadDotEnv(); err != nil {
@@ -26,11 +22,18 @@ func main() {
 	brokers := strings.Split(config.String("KAFKA_BROKERS", "localhost:19092"), ",")
 	group := config.String("KAFKA_CONSUMER_GROUP", "payment-service")
 
-	startOffsetRaw := config.String("KAFKA_START_OFFSET", "earliest")
-	startOffset, err := kafka.ParseStartOffset(startOffsetRaw)
+	startOffset, err := kafka.ParseStartOffset(config.String("KAFKA_START_OFFSET", "earliest"))
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	pgDSN := repo.DSN(
+		config.String("POSTGRES_USER", "app"),
+		config.String("POSTGRES_PASSWORD", "app"),
+		config.String("POSTGRES_HOST", "localhost"),
+		config.String("POSTGRES_PORT", "5432"),
+		config.String("POSTGRES_DB", "app"),
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -41,7 +44,18 @@ func main() {
 	}
 	defer producer.Close()
 
-	paymentService := payment.NewService(producer)
+	pg, err := repo.NewPostgres(ctx, pgDSN)
+	if err != nil {
+		log.Fatalf("postgres: %v", err)
+	}
+	defer pg.Close()
+
+	processedOrders := repo.NewProcessedOrders(pg)
+	if err := processedOrders.EnsureSchema(ctx); err != nil {
+		log.Fatalf("postgres: %v", err)
+	}
+
+	paymentSvc := payment.NewService(producer, processedOrders)
 
 	consumer, err := kafka.NewConsumer(brokers, group, startOffset, kafka.TopicOrdersCreated)
 	if err != nil {
@@ -49,27 +63,11 @@ func main() {
 	}
 	defer consumer.Close()
 
-	log.Printf("payment-service started, group=%s topic=%s start=%s", group, kafka.TopicOrdersCreated, startOffsetRaw)
+	app := paymentworker.New(consumer, paymentSvc)
 
-	err = consumer.Consume(ctx, func(ctx context.Context, msg kafka.Message) {
-		time.Sleep(simulatedProcessingDelay)
+	log.Printf("payment-service started, group=%s topic=%s start=%s", group, kafka.TopicOrdersCreated, startOffset)
 
-		var o orderdomain.Order
-		if err := json.Unmarshal(msg.Value, &o); err != nil {
-			log.Printf("payment-service: bad orders.created payload at partition=%d offset=%d: %v",
-				msg.Partition, msg.Offset, err)
-			return
-		}
-
-		result, err := paymentService.ProcessPayment(ctx, o.OrderID)
-		if err != nil {
-			log.Printf("payment-service: process payment for order_id=%s: %v", o.OrderID, err)
-			return
-		}
-
-		log.Printf("payment-service: order_id=%s status=%s", result.OrderID, result.Status)
-	})
-	if err != nil {
-		log.Fatalf("consume: %v", err)
+	if err := app.Run(ctx); err != nil {
+		log.Fatalf("payment-service: %v", err)
 	}
 }
